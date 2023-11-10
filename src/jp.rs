@@ -727,13 +727,15 @@ pub async fn expand<R : Read, P : AsRef<Path>>(reader: R, target_dir: P) {
                         return;
                     }
                     
-                    if let Some(parent) = entry.path().unwrap().parent() {
+                    let target_path = target_dir.as_ref().join(entry.path().unwrap());
+
+                    if let Some(parent) = target_path.parent() {
                         if let Err(err) = fs::create_dir_all(parent) {
                             eprintln!("{}: failed to create directory {}: {}", "warning".yellow(), parent.to_str().unwrap(), err);
                         }
                     }
                     
-                    if let Err(err) = fs::write(entry.path().unwrap(), &buf) {
+                    if let Err(err) = fs::write(target_path, &buf) {
                         error_unpersist(err, persist);
                         return;
                     }
