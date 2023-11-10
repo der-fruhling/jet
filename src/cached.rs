@@ -109,29 +109,20 @@ pub async fn download<
         }
     }
     
-    let (cache_insert_result, cache_symlink_result) = tokio::join!(
-        tokio::fs::write(&contents_path, &bytes),
-        async {
-            if fs::symlink_metadata(&url_path).is_ok() {
-                return Ok(());
-            }
-
-            if let Ok(existing) = fs::metadata(&url_path) {
-                if existing.is_file() {
-                    tokio::fs::remove_file(&url_path).await?;
-                } else if existing.is_dir() {
-                    tokio::fs::remove_dir_all(&url_path).await?;
-                }
-            }
-            
-            tokio::fs::symlink_file(&contents_path, &url_path).await
-        }
-    );
-    
-    if let Err(err) = cache_insert_result {
+    if let Err(err) = tokio::fs::write(&contents_path, &bytes).await {
         eprintln!("{}: failed to save cache data to {:?}: {:?}; future cachable requests will miss URL {}", "warning".yellow(), &contents_path, err, url);
-    } else if let Err(err) = cache_symlink_result {
-        eprintln!("{}: failed to create cache symlink to {:?} in {:?}: {:?}; future cachable requests will miss URL {}", "warning".yellow(), &contents_path, &url_path, err, url);
+    } else {
+        if let Ok(existing) = fs::symlink_metadata(&url_path) {
+            if existing.is_file() || existing.is_symlink() {
+                tokio::fs::remove_file(&url_path).await?;
+            } else if existing.is_dir() {
+                tokio::fs::remove_dir_all(&url_path).await?;
+            }
+        }
+
+        if let Err(err) = symlink::symlink_file(&contents_path, &url_path) {
+            eprintln!("{}: failed to create cache symlink to {:?} in {:?}: {:?}; future cachable requests will miss URL {}", "warning".yellow(), &contents_path, &url_path, err, url);
+        }
     }
     
     Ok((CacheState::Miss { bytes_downloaded: byte_len, hash: hash.as_u128() }, bytes))
