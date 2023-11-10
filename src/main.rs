@@ -1,6 +1,7 @@
 mod jp;
 mod jp_zlib;
 mod modrinth;
+mod cached;
 
 use std::{path::{PathBuf, Path}, fs};
 
