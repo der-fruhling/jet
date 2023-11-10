@@ -4,6 +4,7 @@ use async_recursion::async_recursion;
 use colored::Colorize;
 use futures::future::join_all;
 use once_cell::sync::Lazy;
+use pathdiff::diff_paths;
 use reqwest::{header::{HeaderValue, USER_AGENT, HeaderMap}, StatusCode};
 use sha2::{Sha512, Digest};
 use tar::Header;
@@ -565,7 +566,7 @@ pub async fn expand<R : Read, P : AsRef<Path>>(reader: R, target_dir: P) {
         if let Action::Persist = action {
             match fs::File::open(path) {
                 Ok(mut file) => {
-                    persist.append_file(path, &mut file).expect(&format!("Failed to persist file {}", path.to_str().unwrap()));
+                    persist.append_file(diff_paths(path, &target_dir).unwrap_or_else(|| path.clone()), &mut file).expect(&format!("Failed to persist file {}", path.to_str().unwrap()));
                     println!("{:>12} {}", "Persist".yellow(), path.to_str().unwrap());
                 }
                 
