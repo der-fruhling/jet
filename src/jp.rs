@@ -1,4 +1,4 @@
-use std::{io::{Write, Read, Seek, SeekFrom}, path::{PathBuf, Path}, fs, collections::HashMap, str::FromStr, sync::Arc};
+use std::{io::{Write, Read, Seek, SeekFrom}, path::{PathBuf, Path}, fs, collections::HashMap, str::FromStr, sync::Arc, fmt::Display};
 
 use async_recursion::async_recursion;
 use colored::Colorize;
@@ -10,7 +10,7 @@ use tar::Header;
 use serde::{Serialize, Deserialize};
 use tempfile::NamedTempFile;
 
-use crate::modrinth::{VersionFile, self};
+use crate::{modrinth::{VersionFile, self}, cached::{self, CacheState}};
 
 pub const EXTENSION: &'static str = "jpk";
 
@@ -209,9 +209,8 @@ impl Entry {
                     ]))
                     .build().expect("Failed to build HTTP client");
                 
-                print!("{:>12} {} {} [version info] ", "GET".magenta(), project, version);
                 let version_resp = modrinth::project_version_get(&client, project, version).await;
-                println!("[done]");
+                println!("{:>12} {} {} [version info]", "GET".magenta(), project, version);
                 
                 Entry::Modrinth {
                     project: project.clone(),
@@ -598,33 +597,54 @@ pub async fn expand<R : Read, P : AsRef<Path>>(reader: R, target_dir: P) {
             Action::Download { display_name, url, sha512 } => {
                 let client = client.clone();
                 join_handles.push(tokio::spawn(async move {
+                    #[derive(Debug)]
+                    struct PhonyError;
+
+                    impl Display for PhonyError {
+                        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                            write!(f, "[phony error]")
+                        }
+                    }
+
+                    impl std::error::Error for PhonyError {}
+
                     println!("{:>12} [{}] {} -> {} (url: {})", "GET".magenta(), "start".magenta(), display_name, path.to_str().unwrap(), &url);
                     
-                    let response = client.get(&url).send().await
-                        .expect(&format!("Failed to GET {}", &url));
-                    
-                    let bytes = match response.status() {
-                        StatusCode::OK => {
-                            let bytes = response.bytes().await;
-                            if let Err(err) = bytes {
+                    let bytes = cached::download(&url[..], || async {
+                        let response = client.get(&url).send().await
+                            .expect(&format!("Failed to GET {}", &url));
+
+                        match response.status() {
+                            StatusCode::OK => {
+                                let bytes = response.bytes().await;
+                                if let Err(err) = bytes {
+                                    println!("{:>12} [{}] {} -> {} (url: {})", "GET".magenta(), "FAILED".red(), display_name, path.to_str().unwrap(), &url);
+                                    eprintln!("GET {} failed with error: {}", &url, err);
+                                    return Err::<Vec<u8>, Box<dyn std::error::Error>>(Box::new(PhonyError));
+                                }
+
+                                Ok(bytes.unwrap().into())
+                            },
+                            StatusCode::NOT_FOUND => {
                                 println!("{:>12} [{}] {} -> {} (url: {})", "GET".magenta(), "FAILED".red(), display_name, path.to_str().unwrap(), &url);
-                                eprintln!("GET {} failed with error: {}", &url, err);
-                                return false;
+                                eprintln!("GET {} was not found", &url);
+                                return Err::<Vec<u8>, Box<dyn std::error::Error>>(Box::new(PhonyError));
+                            },
+                            status => {
+                                println!("{:>12} [{}] {} -> {} (url: {})", "GET".magenta(), "FAILED".red(), display_name, path.to_str().unwrap(), &url);
+                                eprintln!("GET {} returned random status code {}", &url, status);
+                                return Err::<Vec<u8>, Box<dyn std::error::Error>>(Box::new(PhonyError));
                             }
-                            
-                            bytes.unwrap()
-                        },
-                        StatusCode::NOT_FOUND => {
-                            println!("{:>12} [{}] {} -> {} (url: {})", "GET".magenta(), "FAILED".red(), display_name, path.to_str().unwrap(), &url);
-                            eprintln!("GET {} was not found", &url);
-                            return false;
-                        },
-                        status => {
-                            println!("{:>12} [{}] {} -> {} (url: {})", "GET".magenta(), "FAILED".red(), display_name, path.to_str().unwrap(), &url);
-                            eprintln!("GET {} returned random status code {}", &url, status);
-                            return false;
                         }
+                    }).await;
+
+                    let Ok((cache_state, bytes)) = bytes else {
+                        return false
                     };
+
+                    if let CacheState::Miss { bytes_downloaded, hash } = cache_state {
+                        println!("{:>12} (downloaded {} bytes as {:016x})", "Cache Miss".magenta(), bytes_downloaded, hash);
+                    }
                     
                     let bytes: Vec<u8> = bytes.bytes()
                         .map(|r| r.unwrap_or_else(|e| panic!("Data failed to read: {}", e)))
