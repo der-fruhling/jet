@@ -4,11 +4,13 @@ mod modrinth;
 mod cached;
 
 use std::{path::{PathBuf, Path}, fs};
+use std::io::{Read, stdin, stdout, Write};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use jp::SourceManifest;
 use syntect::{parsing::SyntaxSet, highlighting::{ThemeSet, Style}, easy::HighlightLines, util::{LinesWithEndings, as_24_bit_terminal_escaped}};
+use crate::cached::cache_dir;
 
 #[derive(Parser)]
 #[command(about, author, version)]
@@ -62,7 +64,17 @@ enum SubCommand {
 
         #[arg(short = 'c', long, default_value = "zlib")]
         compression: Option<Compression>
+    },
+    Cache {
+        #[command(subcommand)]
+        sub_command: CacheSubCommand
     }
+}
+
+#[derive(Clone, Subcommand)]
+enum CacheSubCommand {
+    Clear,
+    Show
 }
 
 fn canonicalize_dir(path: PathBuf) -> PathBuf {
@@ -95,7 +107,36 @@ async fn main() {
             source,
             output,
             compression
-        } => perform_expand(source, canonicalize_dir(output), compression).await
+        } => perform_expand(source, canonicalize_dir(output), compression).await,
+
+        SubCommand::Cache { sub_command: CacheSubCommand::Show } => {
+            println!("Jet cache directory is {}", cache_dir().to_str().unwrap());
+        }
+
+        SubCommand::Cache { sub_command: CacheSubCommand::Clear } => {
+            print!("Really clear jet caches? [Y/N] -> ");
+            let _ = stdout().flush();
+            let mut slice = [0u8; 1];
+            stdin().read_exact(&mut slice).expect("Failed to read character");
+
+            match slice[0] {
+                b'Y' => {}
+                b'y' => {
+                    println!("You must type an uppercase Y.");
+                    return;
+                }
+                b'n' | b'N' => return,
+                other => {
+                    println!("Invalid character {}", char::from(other));
+                    return;
+                }
+            }
+
+            println!("Clearing caches...");
+            fs::remove_dir_all(cache_dir())
+                .expect("Failed to delete cache directory");
+            println!("Successfully cleared caches.");
+        }
     }
 }
 
