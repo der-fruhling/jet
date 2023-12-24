@@ -136,3 +136,11 @@ Options:
     -c, --compression <COMPRESSION>  [default: zlib] [possible values: none, zlib]
     -h, --help                       Print help
 ```
+
+### `jet cache clear`
+
+Clears all cached downloaded files. Will ask for confirmation.
+
+### `jet cache show`
+
+Shows the directory used to store jet's cache.
