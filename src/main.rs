@@ -158,12 +158,12 @@ fn parse_compression<P : AsRef<Path>>(compression: Option<Compression>, source: 
 }
 
 async fn perform_pack(output: PathBuf, jetfuel_path: Option<PathBuf>, source: PathBuf, compression: Compression) {
-    let mut writer = std::fs::File::create(&output)
+    let mut writer = fs::File::create(&output)
         .expect(&format!("Failed to create file: {:?}", &output));
     let jetfuel_path = jetfuel_path.unwrap_or_else(|| source.join("jetfuel.xml"));
             
     let jetfuel_reader = std::io::BufReader::new(
-        std::fs::File::open(&jetfuel_path)
+        fs::File::open(&jetfuel_path)
             .expect(&format!("Failed to open path: {:?} (does it exist?)", &jetfuel_path))
     );
             

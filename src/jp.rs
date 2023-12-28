@@ -1,4 +1,5 @@
 use std::{io::{Write, Read, Seek, SeekFrom}, path::{PathBuf, Path}, fs, collections::HashMap, str::FromStr, sync::Arc, fmt::Display};
+use std::io::ErrorKind;
 
 use async_recursion::async_recursion;
 use colored::Colorize;
@@ -106,7 +107,7 @@ pub enum SourceRunOption {
         #[serde(rename = "@max")]
         memory: String
     },
-    
+
     UseGc {
         #[serde(rename = "@preset")]
         preset: String
@@ -154,7 +155,7 @@ pub enum SourceEntry {
         name: String,
         #[serde(rename = "@type", default)]
         script_type: ScriptType,
-        #[serde(rename = "$value")]
+        #[serde(rename = "$value", default)]
         options: Vec<SourceRunOption>
     },
     
@@ -301,15 +302,15 @@ impl SourceManifest {
 }
 
 impl Manifest {
-    fn as_actions<P : AsRef<Path>>(&self, base_dir: P) -> Vec<(PathBuf, Action)> {
+    fn as_actions<P : AsRef<Path>>(&self, base_dir: P) -> (Vec<(PathBuf, Action)>, Option<PathBuf>) {
         let mut actions = vec![];
 
-        fn recurse_gen_actions(actions: &mut Vec<(PathBuf, Action)>, entry: &Entry, path: PathBuf) {
+        fn recurse_gen_actions(actions: &mut Vec<(PathBuf, Action)>, server_path: &mut Option<PathBuf>, entry: &Entry, path: PathBuf) {
             match entry {
                 Entry::Directory { contents, ..} => for child in contents {
                     actions.push((path.clone(), Action::CreateDir));
                     
-                    recurse_gen_actions(actions, child, match child {
+                    recurse_gen_actions(actions, server_path, child, match child {
                         Entry::Directory { name, .. } => path.join(name),
                         Entry::File { name, .. } => path.join(name),
                         Entry::Modrinth { .. } => path.to_path_buf(), // projects can have multiple files
@@ -356,10 +357,9 @@ impl Manifest {
                         }
                     ));
                     
-                    actions.push((
-                        path.join("server.jar"),
-                        Action::Symlink { source: server.clone() }
-                    ));
+                    if server_path.is_none() {
+                        *server_path = Some(server.clone());
+                    }
                 }
                 
                 Entry::RunScript { name, script_type, options } => {
@@ -384,9 +384,11 @@ impl Manifest {
                 }
             }
         }
+
+        let mut server_path = None;
         
         for child in &self.contents {
-            recurse_gen_actions(&mut actions, child, match child {
+            recurse_gen_actions(&mut actions, &mut server_path, child, match child {
                 Entry::Directory { name, .. } => base_dir.as_ref().join(name),
                 Entry::File { name, .. } => base_dir.as_ref().join(name),
                 Entry::Modrinth { .. } => base_dir.as_ref().to_path_buf(), // projects can have multiple files
@@ -396,7 +398,7 @@ impl Manifest {
             })
         }
 
-        actions
+        (actions, server_path)
     }
 }
 
@@ -560,23 +562,29 @@ pub async fn expand<R : Read, P : AsRef<Path>>(reader: R, target_dir: P) {
         .build()
         .expect("Failed to build HTTP client"));
     
-    let actions = manifest.as_actions(&target_dir);
+    let (actions, server_path) = manifest.as_actions(&target_dir);
     
     for (path, action) in &actions {
         if let Action::Persist = action {
-            match fs::File::open(path) {
-                Ok(mut file) => {
-                    persist.append_file(diff_paths(path, &target_dir).unwrap_or_else(|| path.clone()), &mut file).expect(&format!("Failed to persist file {}", path.to_str().unwrap()));
-                    println!("{:>12} {}", "Persist".yellow(), path.to_str().unwrap());
-                }
-                
-                Err(err) => {
-                    if err.kind() == std::io::ErrorKind::NotFound {
-                        println!("{:>12} {} (nothing to persist)", "Persist".yellow().strikethrough(), path.to_str().unwrap());
-                    } else {
-                        panic!("Failed to persist {}: {}", path.to_str().unwrap(), err);
+            if path.is_file() {
+                match fs::File::open(path) {
+                    Ok(mut file) => {
+                        persist.append_file(diff_paths(path, &target_dir).unwrap_or_else(|| path.clone()), &mut file).expect(&format!("Failed to persist file {}", path.to_str().unwrap()));
+                        println!("{:>12} {}", "Persist".yellow(), path.to_str().unwrap());
+                    }
+
+                    Err(err) => {
+                        if err.kind() == std::io::ErrorKind::NotFound {
+                            println!("{:>12} {} (nothing to persist)", "Persist".yellow().strikethrough(), path.to_str().unwrap());
+                        } else {
+                            panic!("Failed to persist {}: {}", path.to_str().unwrap(), err);
+                        }
                     }
                 }
+            } else if path.is_dir() {
+                persist.append_dir_all(diff_paths(path, &target_dir).unwrap_or_else(|| path.clone()), path).expect(&format!("Failed to persist directory {path:?}"))
+            } else {
+                eprintln!("Cannot persist file {path:?}! Must be a file or directory.")
             }
         }
     }
@@ -731,13 +739,17 @@ pub async fn expand<R : Read, P : AsRef<Path>>(reader: R, target_dir: P) {
 
                     if let Some(parent) = target_path.parent() {
                         if let Err(err) = fs::create_dir_all(parent) {
-                            eprintln!("{}: failed to create directory {}: {}", "warning".yellow(), parent.to_str().unwrap(), err);
+                            if err.kind() != ErrorKind::AlreadyExists {
+                                eprintln!("{}: failed to create directory {}: {}", "warning".yellow(), parent.to_str().unwrap(), err);
+                            }
                         }
                     }
                     
-                    if let Err(err) = fs::write(target_path, &buf) {
-                        error_unpersist(err, persist);
-                        return;
+                    if entry.header().entry_type().is_file() {
+                        if let Err(err) = fs::write(target_path, &buf) {
+                            error_unpersist(err, persist);
+                            return;
+                        }
                     }
                 }
 
@@ -752,6 +764,16 @@ pub async fn expand<R : Read, P : AsRef<Path>>(reader: R, target_dir: P) {
             error_unpersist(err, persist);
             return;
         }
+    }
+
+    if let Some(server_path) = server_path {
+        match symlink::symlink_file(
+            server_path.strip_prefix(target_dir.as_ref()).unwrap(),
+            target_dir.as_ref().join("server.jar")
+        ) {
+            Ok(()) => {}
+            Err(e) => eprintln!("Failed to symlink server.jar with {server_path:?}: {e:?}")
+        };
     }
     
     for result in results {
