@@ -1,0 +1,17 @@
+name: Docker
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Publish
+        run: | 
+          docker build --tag ghcr.io/der-fruhling/jet:bookworm --build-arg="rust-ver=slim" --build-arg="image=debian" --build-arg="image-ver=bookworm" .
+          docker build --tag ghcr.io/der-fruhling/jet:bookworm-slim --build-arg="rust-ver=slim" --build-arg="image=debian" --build-arg="image-ver=bookworm-slim" .
+          docker build --tag ghcr.io/der-fruhling/jet:alpine --build-arg="rust-ver=alpine" --build-arg="image=alpine" --build-arg="image-ver=latest" .
