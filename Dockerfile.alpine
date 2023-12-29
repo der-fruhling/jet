@@ -1,0 +1,12 @@
+ARG rustver
+ARG imagever
+
+FROM rust:${rustver} AS build
+COPY . /build
+WORKDIR /build
+RUN apk update && apk add libssl3 pkgconfig build-base libressl-dev
+RUN cargo build --release
+
+FROM alpine:${imagever}
+RUN apk update && apk add libssl3 pkgconfig
+COPY --from=build /build/target/release/jet /usr/bin/

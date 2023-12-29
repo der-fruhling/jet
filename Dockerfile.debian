@@ -1,13 +1,12 @@
-ARG rust-ver
-ARG image
-ARG image-ver
+ARG rustver
+ARG imagever
 
-FROM rust:$rust-ver AS build
+FROM rust:${rustver} AS build
 COPY . /build
 WORKDIR /build
 RUN apt-get update && apt-get upgrade -y && apt-get install libssl-dev pkg-config -y
 RUN cargo build --release
 
-FROM $image:$image-ver
+FROM debian:${imagever}
 RUN apt-get update && apt-get upgrade -y && apt-get install libssl3 -y
 COPY --from=build /build/target/release/jet /usr/bin/
